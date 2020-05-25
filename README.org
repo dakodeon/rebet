@@ -1,0 +1,5 @@
+* REBET
+
+  Manage mp3 collections with an org-based lyrics file.
+
+  Using eyeD3, ffprobe.
