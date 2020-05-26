@@ -1,0 +1,939 @@
+#+TITLE: RebetOLD.el -- Manage my rebetika collection
+#+AUTHOR: dakodeon
+#+EMAIL: dakodeon@hotmail.com
+
+* TODO TODO list [2/5]
+  
+** TODO Clean up introduction
+
+   Update the info as we write the code, make it smaller.
+
+** TODO Fix rebet--attributes
+
+   Decide whether it should be a list of property lists or a list of empty
+   symbols with properties. Also, include a 'val' field either way.
+
+** TODO Delete lines with the same path from ref-file
+
+   When updating the tags, first check for a line containing the same path
+   and remove it.
+
+   Thought: maybe just use the filename, that way we are covered while
+   moving stuff around.
+
+   Fix buggy behaviour when renaming files. In which way can we have access
+   to the new name? maybe a property?
+
+** DONE Write dired part
+   CLOSED: [2020-05-14 Thu 20:34]
+
+   Mainly the add metadata part. It should also update the lyrics file, if
+   it finds same title?
+
+   Add an option to update the same tag to a bunch of files.
+
+** DONE Search capabilities
+   CLOSED: [2020-05-14 Thu 20:34]
+
+   Make use of the ref-file. eg Search and replace tags
+
+* INTRODUCTORY NOTES
+
+** What is this file?
+
+   This file contains all the code that I came up with in order to manage
+   my ever-growing rebetika collection, both songs and lyrics. The code
+   started to get out of hand if keeping it all in my emacs config file, so
+   I decided to make it it's own package. That way, the code is kept
+   organized and does not clutter my config.
+
+** What is the need for such a file?
+
+   I play and sing rebetika songs. For this particular kind of music, it is
+   not strange if you know how to play hundreds of songs. So, I always had
+   the problem of keeping track of the songs I know, alongside with their
+   lyrics, which is very useful, either for personal use, or when
+   collaborating with other musicians.
+
+** The logic
+
+   From early on, I started wondering how I could organize my songs
+   collection. Due to the fact that all the songs are in mp3 format, I
+   decided to use ID3 tags, which also allow for custom tags, very useful
+   for keeping track of information specific to a rebetiko song, like
+   rhythm (zeibekiko, tsifteteli etc.) or /dromos/ (greek word for 'road',
+   'way'), meaning a type of scale used in rebetiko music, a westerized
+   version of oriental scales, coming from arabic /'maquams'/.
+
+   I wrote a shell script, =mp3-tag-editor=, which can be found in my
+   [[https://github.com/dakodeon/dotfiles][dotfiles]], which allows for batch-editing of ID3 tags, with optional
+   renaming of the actual file, according to a naming template defined in
+   the said script's help text. For this task, the script makes use of the
+   programs =ffprobe= (which comes with =ffmpeg=), for retrieving existing
+   tags and =eyeD3=, which edits the tags themselves and, as I noticed, has a
+   very good handling of UTF-8 text.
+
+   =fzf=, a fuzzy-searcher used to locate songs, which is interfaced into
+   emacs by the =counsel-fzf= function, is also required for this package.
+
+   In parallel, I kept a lyrics file, initially as an odt file, but I soon
+   turn it into an org file, as I got more and more into Emacs. The final
+   structure of this file is very simple, each song has it's own entry,
+   with the heading being the song's title, and all other information is
+   stored as org properties. My final goal is to be able to export this
+   file as a pdf, according to specified properties and tags, but I am not
+   there yet.
+
+   Here is a list of the ID3 tags used, alongside with their respective org
+   properties and a description:
+
+   |----------+--------------+---------------------------------------------------|
+   | ID3 tag  | org property | description                                       |
+   |----------+--------------+---------------------------------------------------|
+   | title    | ITEM         | The song's title (ITEM refers to the org heading) |
+   | composer | ΣΥΝΘΕΤΗΣ     | The song's composer                               |
+   | artist   | ΤΡΑΓΟΥΔΙΣΤΗΣ | The song's singer                                 |
+   | rhythm   | ΡΥΘΜΟΣ       | The song's rhythm                                 |
+   | dromos   | ΔΡΟΜΟΣ       | The song's dromos (scale)                         |
+   | tone     | ΤΟΝΟΣ        | The song's tonality                               |
+   |----------+--------------+---------------------------------------------------|
+
+   After this minimum of organizing stuff, I wanted to have a system which
+   would integrate the lyrics file with my collection, basically being able
+   to link files to lyrics, as well as sharing between ID3 tags and
+   org-properties, while managing the ID3 tags insertion from dired.
+
+   This is the initial description, all parts will be described as we
+   proceed.
+
+** Overview analysis
+
+   Here I will attempt a brief description of the different parts of the
+   package.
+
+*** 1. Directory and files structure
+
+    The best approach for keeping things organized is to have a specific
+    structure for capturing and storing things. For this task, I define a
+    default location for my music collection, assuming that all of the
+    organized music tracks will go there, as well as an optional list of
+    temp directories, like for example the directory where the song is
+    downloaded, before having its ID3 tags set.
+
+    The lyrics are stored also in a specific file.
+
+    Naming the mp3 files is done according to a template, defined in my
+    script, as noted above. The lyrics also have their own template, which
+    can be also seen in the relevant org-capture template.
+
+    Knowing the specific manner by which things are stored means that it is
+    easier to find things and pass information around, which brings us to
+    the next topic:
+
+*** 2. Interconnectivity structures
+
+    The simplest example for what I mean is the equivalence of the ID3 tags
+    and the org properties. ID3 tags have specific keywords for frequently
+    defined attributes, like title or artist, and I keep to the defaults
+    where possible for the sake of consistency, but these are not necessarily
+    the keywords that I want to use in my lyrics file. So, instead of
+    "composer" I have the greek "ΣΥΝΘΕΤΗΣ", insead of "artist" I have
+    "ΤΡΑΓΟΥΔΙΣΤΗΣ" etc. Note the use of capital letters, which is not
+    mandatory, but I noted this conversion used throughout org-mode, so I
+    kept this also for the sake of consistency.
+
+    Besides this interconnected information, there are also other pieces
+    that I want to keep related. These include the shell script options for
+    setting an ID3 tag and a list used for autocompletion, where desirable.
+    Also, a way to store a value and keep it related to the aforementioned
+    information.
+
+    The way that I decided to go about this has two integral parts:
+
+    1. A list of property lists, each defining the information related to a
+       specific tag.
+    2. A file, in which we store all the information about all the mp3
+       files in the default directory, including the full path of the file,
+       alongside with stored metadata for each one of them.
+
+    From this file, using some string manipulation, we extract various
+    pieces of information, forming lists which will help with
+    autocompleting tag values. Also, by keeping track of the paths and the
+    associated tags, we can easily implement a search function for specific
+    tags. The implementations of this are various and, as of now, not yet
+    fully explored. Some thoughts include searching by tag, changing a
+    specific tag to all the files etc.
+
+    For generating this file, we can either run a dedicated function, which
+    parses all the mp3 files in the default directory, or generate it as we
+    populate the tags, one by one. Adding to this file happens whenever a
+    file has its tags updated.
+
+*** 3. Syncing between mp3 files and lyrics
+
+    The functionality regulating this matter consists of two functions, one
+    that updates org-properties based on ID3 tags and one that does the
+    opposite, updates ID3 tags based on org-properties.
+
+    There is also a third function, which just calls the other two
+    sequentially, first updating the properties and then updating the ID3
+    tags. That way, after inserting existing tags as properties, we can
+    update whichever of those remain unset, and update back the ID3 tags of
+    the file with the new information inserted.
+
+    There is no automation for this task, i.e to parse the lyrics file and
+    update all entries and properties. This happens because there is no
+    guarantee that a lyrics entry has an associated file, or that the
+    associated file will have the same name. It would be useful however, to
+    write a function like that, which will write all existing tags when
+    finding a match.
+
+*** 4. Setting ID3 tags per file
+
+    This is the main interface with the mp3-tag-editor script, and is
+    implemented in two versions. One is the simplest interface possible, it
+    runs the script inside a term buffer and works exactly like opening a
+    terminal and running the script, the other is a full fledged interface,
+    where we can use autocompletion, search and replace tags etc, while
+    also updating the reference file and variables. Both implementations
+    act on the marked files of a dired buffer.
+   
+   
+* THE CODE
+  
+** Initial part, comments setting up the package
+
+   #+begin_src emacs-lisp
+   ;;; rebet.el --- rebetika songs tags and lyrics management
+
+   ;; Author: dakodeon
+   ;; Keywords: music, dired, org-mode, organize, lyrics
+
+   ;;; Commentary:
+
+   ;; This package is used to manage my collection of rebetika songs. These
+   ;; are organized in a specified directory, with well-defined id3 tags, and
+   ;; the same naming convention derived from my personal script
+   ;; (mp3-tag-editor). At the same time, I keep a lyrics file, written in
+   ;; org-mode, each entry being a song with properties, which are the same as
+   ;; the id3 tags.
+
+   ;; The idea is that the lyrics file should be inter-connected with the
+   ;; actual songs. This means the ability to find the song from the lyrics
+   ;; and vice-versa, renaming a song title according to it's actual title id3
+   ;; tag, passing id3 tags to org-properties and vice-versa. Of course,
+   ;; setting the id3 tags themselves should be done in dired, with
+   ;; autocompletion for values.
+
+   ;; The id3 tags are organized as such:
+   ;; - title: the title of the song
+   ;; - composer: the composer of the song
+   ;; - artist: the singer(s) of the song
+   ;; - year: recording year
+   ;; - rhythm: rebetiko-style rhythmic patterns (zeibekiko, tsifteteli etc)
+   ;; - dromos: lacking of a better word, "dromos" is a form of scale, derived
+   ;; from arabic "maquams"
+   ;; - tone: the tonality of the song
+
+   ;; All these have their equivalents in org-properties
+
+   ;; This package depends on some emacs packages, as well as some external tools and a custom script.
+
+   ;; Emacs dependencies: ivy, counsel, counsel-fzf, org-mode, dired
+   ;; External dependencies: ffprobe, eyeD3, fzf
+   ;; My script is part of my dotfiles (in the scripts directory) and can be
+   ;; found here: https://github.com/dakodeon/dotfiles
+
+   ;;; Code:
+
+   #+end_src
+
+** Requirements
+
+   The emacs packages this package needs.
+
+   Dired and org-mode from packages already part of emacs, ivy and counsel
+   from MELPA packages.
+
+   NOTE: The requirement of counsel is due to the fact that I use
+   =counsel-fzf= to locate songs, maybe I could change that so that it is
+   optional.
+
+   Also NOTE: In this section I could also include checks for the required
+   programs, as well as for my script.
+   
+   #+begin_src emacs-lisp
+   (require 'ivy)
+   (require 'counsel)
+   (require 'dired)
+   (require 'org)
+   #+end_src
+   
+** Variables
+
+*** Basics
+
+    The first set of variables store the default locations used. These are:
+   
+    - =rebet-default-dir=: The default location where songs are stored. It
+      is assumed that all songs in this location have their ID3 tags set,
+      ie they are organized.
+    - =rebet-dirs-list=: Optional variable, storing a list of directories
+      possibly containing rebetika songs, for example the Downloads
+      directory. As specified in the help string, using this variable
+      overrides the use of =rebet-default-dir= for the most part, so the
+      value of said variable should be included in this list, if set.
+    - =rebet-lyrics-file=: The file storing the lyrics. It should
+      obviously be an org file.
+    - =rebet--ref-file=: This file keeps a list of all the mp3 files in the
+      =rebet-default-dir=, alongside with all the information stored in ID3
+      tags. It is intended to be used for autocompleting values, but also
+      as a reference for easy searching and changing data.
+      
+
+      #+begin_src emacs-lisp
+      ;; variables
+
+      ;;;###autoload
+      (defvar rebet-default-dir "~/Music/Ρεμπέτικα"
+	"The default directory where songs are stored.")
+
+      (defvar rebet-dirs-list nil
+	"An optional list of additional directories where rebetika are stored,
+		    besides `rebet-default-dir', eg some download dir.
+		    Optionally, you can include the value of
+		    `rebet-default-dir` for consistency.")
+
+      ;;;###autoload
+      (defvar rebet-lyrics-file "~/stixoi.org"
+	"The default file for rebetika lyrics.
+      It should be an org file.")
+
+      (defvar rebet--ref-file "~/Music/Ρεμπέτικα/.ref-list"
+	"Where to store the reference list used for searching and
+	      building autocomp lists")
+      #+end_src
+
+*** Dictionary
+    
+    Here is a "dictionary" of keywords and other information attatched to
+    specific tags. Essentially, this is a list of properties' lists. This
+    is the backbone of the whole functionality, as it provides the link
+    between the tag names, the org properties names and the shell command
+    options, as well as keeping lists generated by the =rebet--ref-file=
+    for where autocompletion is needed.
+    
+
+    #+begin_src emacs-lisp
+    ;;; empty symbols (maybe we should make them nil) --- or maybe we should
+    ;;; make them not symbols, just a list of properties lists, with a property
+    ;;; to store temp values
+    (setplist 'rebet--title
+	      '(tagname "title" propname "ITEM"
+			val nil cmd-opt "-t " eye-opt "--title "))
+    (setplist 'rebet--composer
+	      '(tagname "composer" propname "ΣΥΝΘΕΤΗΣ"
+			val nil cmd-opt "-c " eye-opt "--text-frame=TCOM:" autocomp-lst nil))
+    (setplist 'rebet--artist
+	      '(tagname "artist" propname "ΤΡΑΓΟΥΔΙΣΤΗΣ"
+			val nil cmd-opt "-a " eye-opt "--artist " autocomp-lst nil))
+    (setplist 'rebet--rhythm
+	      '(tagname "rhythm" propname "ΡΥΘΜΟΣ"
+			val nil cmd-opt "-r " eye-opt "--text-frame=rhythm:" autocomp-lst nil))
+    (setplist 'rebet--dromos
+	      '(tagname "dromos" propname "ΔΡΟΜΟΣ"
+			val nil cmd-opt "-d " eye-opt "--text-frame=dromos:" autocomp-lst nil))
+    (setplist 'rebet--tone
+	      '(tagname "tone" propname "ΤΟΝΟΣ"
+			val nil cmd-opt "-n " eye-opt "--text-frame=tone:" autocomp-lst
+			("Ντο" "Ντο#" "Ρε" "Ρε#" "Μι" "Φα" "Φα#" "Σολ" "Σολ#" "Λα" "Λα#" "Σι")))
+    (setplist 'rebet--year
+	      '(tagname "date" propname "ΕΤΟΣ_ΗΧΟΓΡ"
+			val nil cmd-opt "-y " eye-opt "--release-year "))
+
+    ;;;###autoload
+    (defvar rebet--attributes
+      '(rebet--title rebet--composer rebet--artist
+		     rebet--rhythm rebet--dromos rebet--tone rebet--year))
+    #+end_src
+
+** Internal functions
+
+   Functions used by functions. These are not supposed to be used
+   interactively, but perform some repeated tasks used by the interactive
+   ones.
+
+   - =rebet--get-data-from-id3=: Makes a list of ID3 values for a given
+     file.
+   - =rebet--get-data-from-props=: Makes a list of org-properties for a
+     given (the current) entry
+   - =rebet--make-tag-cmd=: Generates the string expressing the command
+     used to set ID3 tags.
+   - =rebet--from-list-to-file=: Generates a file with the contents of a
+     list variable.
+   - =rebet--set-fzf-cmd=: Builds the string used to set the environmental
+     variable =FZF_DEFAULT_COMMAND= to include the directories specified in
+     =rebet-default-dir= and/or =rebet-dirs-list=.
+   - =missing command about adding to the ref file=
+   - =rebet--make-ref-file=: Runs through all mp3 files in
+     =rebet-default-directory=, and writes to =rebet-ref-file=.
+   - =rebet--make-ref-lists=: Parses =rebet-ref-file= (which should already
+     be created) and adds lists of values where required by
+     =rebet--attributes=. This command, as well as the previous one, are
+     interactively called together by the function =rebet-update-all-refs=
+     (see next section).
+     
+
+     #+begin_src emacs-lisp
+     ;; internal functions
+     (defun rebet--get-data-from-id3 (path)
+       "Returns an alist based on the ID3 tags of file in PATH."
+       (mapcar (lambda (x)
+		 (let ((pair (split-string x "=" t "TAG:")))
+		   (cons (car pair) (nth 1 pair))))
+	       (seq-remove (lambda (str) (string-match-p "FORMAT" str))
+			   (process-lines
+			    "ffprobe" "-loglevel" "error" "-show_entries"
+			    "format_tags=title,composer,artist,rhythm,dromos,tone,date"
+			    (expand-file-name path)))))
+
+     (defun rebet--get-data-from-props ()
+       "Returns an alist based on the org properties of the current entry.
+	  Makes sense to use only in the lyrics file (`rebet-lyrics-file')."
+       (let ((props (org-entry-properties)))
+	 (mapcar (lambda (attr)
+		   (cons (get attr 'tagname)
+			 (cdr (assoc (get attr 'propname) props))))
+		 rebet--attributes)))
+
+     (defun rebet--make-tag-cmd (path rename val-list)
+       "Makes the string of the command that will set the ID3 tags of the file
+     in PATH. If RENAME is non-nil, the option to rename the file will be added.
+     VAL-LIST should be an alist similar to the output of
+     `rebet--get-data-from-id3', ie of the form ((\"composer\" . \"composer
+     name\") (\"artist\" .\"artist name\")) etc. Nil values will be ignored and
+     will not activate the corresponding option."
+       (let ((optlist (mapcar
+		       (lambda (attr)
+			 (cons (get attr 'tagname) (get attr 'cmd-opt)))
+		       rebet--attributes)))
+	 (concat "mp3-tag-editor -EX" (if rename "R " " ")
+		 (mapconcat
+		  (lambda (x)
+		    (let ((val (cdr (assoc (car x) val-list))))
+		      (if (and val (not (string-match-p "^ *$" val)))
+			  (concat (cdr x) (shell-quote-argument val) " ")
+			"")))
+		  optlist "")
+		 (shell-quote-argument path))))
+
+     (defun rebet--from-list-to-file (lst file)
+       "Build a file from a list."
+       (with-temp-file (expand-file-name file)
+	 (insert (mapconcat 'identity lst "\n"))))
+
+     (defun rebet--set-fzf-cmd ()
+       "Builds the string for the default fzf command used to search
+		 for rebetika."
+       (concat "FZF_DEFAULT_COMMAND=find "
+	       (mapconcat 'identity
+			  (delete-dups
+			   (push rebet-default-dir rebet-dirs-list)) " ")
+	       " -name \"*.mp3\""))
+
+     (defun rebet--make-ref-line (path var-list)
+       "Creates the string to put in ref file."
+       (concat "|" (mapconcat
+		    (lambda (x) (concat (car x) ":" (cdr x)))
+		    var-list "|")
+	       "|path:" path))
+
+     (defun rebet--make-ref-file ()
+       "Makes the reference file, located in `rebet--ref-file',
+	  according to the mp3 files in `rebet-default-dir'. It can take
+	  some time to complete, depending on the number of files."
+       (rebet--from-list-to-file
+	(mapcar
+	 (lambda (file)
+	   (message "%s" file)
+	   (let ((song-data (rebet--get-data-from-id3 file)))
+	     (rebet--make-ref-line file song-data)))
+	 (directory-files-recursively (expand-file-name rebet-default-dir) "mp3"))
+	rebet--ref-file))
+
+     (defun rebet--make-ref-lists ()
+       "Makes the reference lists according to the contents of
+	  `rebet--ref-file'."
+       (unless (file-exists-p rebet--ref-file)
+	 (user-error
+	  "ERROR: The file \"%s\" does not exist. Run M-x rebet-update-all-refs"
+	  rebet--ref-file))
+       (with-temp-buffer
+	 (insert-file-contents (expand-file-name rebet--ref-file))
+	 (mapc (lambda (attr)
+		 (put attr 'autocomp-lst
+		      (remove
+		       ""
+		       (delete-dups
+			(mapcar
+			 (lambda (ln)
+			   (let ((rgx (concat "^.*" (get attr 'tagname) ":\\||.*$")))
+			     (replace-regexp-in-string rgx "" ln)))
+			 (split-string (buffer-string) "\n"))))))
+	       (seq-remove (lambda (x)
+			     (or
+			      (not (member 'autocomp-lst (symbol-plist x)))
+			      (string= (get x 'tagname) "tone")))
+			   rebet--attributes))))
+
+     (defun rebet--add-line-to-ref (path var-list)
+       "Adds a new line in the `rebet--ref-file', for a file with path
+       PATH and the data included in VAR_LIST. First it checks for
+       lines referring to the same filename (independently of the
+       directory) and removes them. It will also update the
+       autocomp-lists. VAR-LIST should be an alist, similar to the
+       output of `rebet--get-data-from-id3'."
+       (let* ((filename (file-name-base path))
+	      (path (expand-file-name path))
+	      (ref-file (expand-file-name rebet--ref-file)))
+	 (with-temp-file ref-file
+	   (insert-file-contents ref-file)
+	   (delete-matching-lines (concat "path:.*" filename "\\.mp3") (point-min) (point-max))
+	   (insert (concat (rebet--make-ref-line path var-list) "\n"))))
+       (rebet--make-ref-lists))
+     #+end_src
+
+** Interactive functions
+
+   These provide the main interface of the package.
+
+   - =rebet-update-all-refs=: Calls secuentially the functions
+     =rebet--make-ref-file= and =rebet--make-ref-lists=, thus initializing
+     the =rebet--ref-file= as well as the autocompletion lists. It parses
+     all the mp3 files in the default directory, so it might take some time
+     to finish.
+   - =rebet-tags-to-props=: Usable only in =rebet-lyrics-file=. Sets the
+     org-properties by reading ID3 tags from a file. The file is located by
+     the user with fzf search. If the title of the song is different from
+     the header of the entry then the header gets replaced by the title.
+   - =rebet-props-to-tags=: Usable only in the lyrics file. Sets the ID3
+     tags of a file according to the org-properties of the current entry.
+     The file is located by the user with fzf search. Optionally, it sets
+     the title to be the entry header and renames the file.
+   - =rebet-tags-to-props-and-back=: Calls the two previous functions
+     sequentially, effectively writing org properties and then updating the
+     ID3 tags.
+   - =rebet-dired-simple-tags=: The simplest way to set ID3 tags on a file.
+     Acts on marked files in a dired buffer and opens a term window running
+     my =mp3-tag-editor= script. It does not autocomplete, and does not add
+     new values to the lists.
+   - =missing dired tag setter, full fledged=
+
+     #+begin_src emacs-lisp
+      ;; interactive functions
+
+     ;;;###autoload
+     ;; this is out!
+     (defun rebet-update-all-refs ()
+       "Run to initialize reference file and variables, according to
+     the mp3 files in `rebet-default-dir'. Calls
+     `rebet--make-ref-file' and `rebet--make-ref-lists'
+     consecutively."
+       (interactive)
+       (rebet--make-ref-file)
+       (rebet--make-ref-lists))
+
+     ;;;###autoload
+     (defun rebet-tags-to-props (&optional path)
+	"Works only in `rebet-lyrics-file'. Reads ID3 tags from a
+	selected mp3 file and converts them to org-properties in the
+	entry at point. It also updates the heading, in case it
+	differs from the actual title. If PATH is specified, it reads
+	from this file, else it calls counsel-fzf."
+       (interactive)
+       (unless (string= buffer-file-name (expand-file-name rebet-lyrics-file))
+	 (user-error "Error: Not in the lyrics file (%s)" rebet-lyrics-file))
+       (let* ((process-environment (cons (rebet--set-fzf-cmd)
+					 process-environment))
+	      (path (if path (expand-file-name path)
+		      (l/counsel-fzf-as-text "Get props from: ")))
+	      (song-data (rebet--get-data-from-id3 path))
+	      (entry-data (org-entry-properties)))
+	 (mapc (lambda (attr)
+		 (org-set-property
+		  (get attr 'propname) (cdr (assoc (get attr 'tagname) song-data))))
+	       (seq-remove (lambda (x) (string= (get x 'tagname) "title"))
+			   rebet--attributes))
+	 (mapc (lambda (x)
+		 (if (string-match-p "^ *$" (cdr (assoc (get x 'propname)
+							(org-entry-properties))))
+		     (org-delete-property (get x 'propname))))
+	       rebet--attributes)
+	 (org-edit-headline (cdr (assoc "title" song-data))))
+	 ;; do not update data -- thought: maybe use rebet-autocompletion?
+	 (if mark-active (deactivate-mark t)))
+
+     ;;;###autoload
+     ;; this will be redesined
+     (defun rebet-props-to-tags (&optional path)
+	"Works only in `rebet-lyrics-file'. Reads the properties from
+	the current entry and converts them to ID3 tags of a selected
+	mp3 file, also renaming it if necessary. If PATH is provided,
+	it acts on this file, else it calls counsel-fzf."
+       (interactive)
+       (unless (string= buffer-file-name (expand-file-name rebet-lyrics-file))
+	 (user-error "Error: Not in the lyrics file (%s)" rebet-lyrics-file))
+       (let* ((process-environment (cons (rebet--set-fzf-cmd)
+					 process-environment))
+	      (song-data (rebet--get-data-from-props))
+	      (path (if path (expand-file-name path)
+		      (l/counsel-fzf-as-text "Give props to: "))))
+	 (shell-command (rebet--make-tag-cmd path t song-data))
+	 (rebet--add-line-to-ref path song-data))
+       (if mark-active (deactivate-mark t)))
+
+
+     ;;;###autoload
+     (defun rebet-tags-to-props-and-back (&optional path)
+       "Sequentially calls `rebet-tags-to-props' and
+	`rebet-org-to-tags' on a specified file. If PATH is set it
+	acts on this file, if not, it calls counsel-fzf."
+       (interactive)
+       (let* ((process-environment
+	       (cons (rebet--set-fzf-cmd) process-environment))
+	      (path (if path (expand-file-name path)
+		      (l/counsel-fzf-as-text "Props come and go :"))))
+	 (rebet-tags-to-props path)
+	 (rebet-props-to-tags path)))
+
+     ;;;###autoload
+     ;; this is ok
+     (defun rebet-dired-mp3-tag-editor ()
+       "Simple interface directly to the mp3-tag-editor shell script,
+	using `make-term'. No completions and no updating lists etc
+	with new values. Acts on the marked files of the current dired
+	buffer."
+       (interactive)
+       (let ((files (dired-get-marked-files)))
+	 (apply 'make-term "mp3-tag-editor" "sh" nil "mp3-tag-editor" "-ER" files)
+	 (switch-to-buffer-other-window "*mp3-tag-editor*")))
+
+     ;;;###autoload
+     (defun rebet-dired-set-tags ()
+       (interactive)
+       (rebet--make-ref-lists)
+       (let ((files (dired-get-marked-files)))
+	 (mapc (lambda (file)
+		 (let ((def-values (rebet--get-data-from-id3 file))
+		       (fname (file-name-base file)))
+		   (mapc (lambda (attr)
+			   (let ((defval (cdr (assoc (get attr 'tagname) def-values))))
+			     (put attr 'val
+				  (completing-read
+				   (concat fname " | " (get attr 'tagname) ": ")
+				   (get attr 'autocomp-lst) nil nil defval))))
+			 rebet--attributes)
+		   (let ((new-data (mapcar (lambda (x)
+				   (cons (get x 'tagname) (get x 'val)))
+					   rebet--attributes)))
+		     (shell-command (rebet--make-tag-cmd file t new-data))
+		     (rebet--make-ref-line file new-data)))
+		 (rebet--make-ref-lists))
+	       files))
+       (revert-buffer))
+
+     (defun rebet-dired-set-tag-to-all ()
+       "Set a tag to every file in the marked files."
+       (interactive)
+       (rebet--make-ref-lists)
+       (let* ((files (dired-get-marked-files))
+	      (tag (completing-read "Set which tag? "
+				    (mapcar (lambda (x) (get x 'tagname)) rebet--attributes) nil t))
+	      (symb (seq-find (lambda (x) (string= (get x 'tagname) tag)) rebet--attributes))
+	      (val (completing-read (concat "Set " tag " value: ")
+				    (get symb 'autocomp-lst))))
+	 (mapc (lambda (path)
+		 (shell-command (rebet--make-tag-cmd path t (list (cons tag val)))))
+	       files)
+	 ;; update refs the new way
+	 ))
+
+     (defun rebet-change-tag-globally ()
+       (interactive)
+       (rebet--make-ref-lists)
+       (let* ((ref-file (expand-file-name rebet--ref-file))
+	      (tag (completing-read "Change which tag? "
+				    (mapcar (lambda (x) (get x 'tagname)) rebet--attributes) nil t))
+	      (symb (seq-find (lambda (x) (string= (get x 'tagname) tag)) rebet--attributes))
+	      (oldval (completing-read (concat tag " value to change: ")
+				       (get symb 'autocomp-lst)))
+	      (newval (completing-read (concat "Change " tag " \"" oldval "\" to: ")
+				       (get symb 'autocomp-lst))))
+	 (unless (string= oldval newval)
+	   (with-temp-buffer
+	     (insert-file-contents ref-file)
+	     (let ((matching (mapcar
+			      (lambda (ln)
+				(replace-regexp-in-string
+				 "path:" ""
+				 (seq-find (lambda (x) (string-match-p "path:" x))
+					   (split-string ln "|"))))
+			      (seq-remove
+			       (lambda (x) (not (string-match-p (concat tag ":" oldval) x)))
+			       (split-string (buffer-string) "\n")))))
+	       (mapc (lambda (path)
+		       (if (file-exists-p path)
+			   (shell-command (rebet--make-tag-cmd path t (list (cons tag newval))))))
+		     matching))))
+	 (with-temp-file ref-file
+	   (insert-file-contents ref-file)
+	   (goto-char (point-min))
+	   (while (search-forward (concat tag ":" oldval) nil t)
+	     (replace-match (concat tag ":" newval))))))
+     #+end_src
+
+* Redesigning
+
+   So: the conclusion is that I should drop my shell script and implement
+   setting the tags by using directly eyeD3. This will provide better
+   integration with all the parts of the functionality.
+
+** Better defined parts
+
+    1. Reference file. Everything concerning the creation and update of the
+       reference file.
+    2. Lyrics file. Storing lyrics and setting org-props. Also, updating
+       entries from exisiting ID3 tags or the opposite, updating existing
+       files with tags extracted from the org props. This intersects with
+       the next piece.
+    3. Files manipulation. Setting tags and renaming (and maybe also
+       moving??) mp3 files.
+
+** Re-evaluating already written functions
+
+    Here is the list of the functions still in use after the new implementation:
+    
+    - rebet--get-data-from-id3: this extracts information from an mp3
+      file and stores it in an association list of the form ((<tag> .
+      <value>)). This form is then used throughout the code.
+    - rebet--set-fzf-command: (needs renaming) this will create the
+      string that will set the fzf command to point to the correct
+      directory when called to look for a file.
+    - rebet--make-ref-lists: this will create lists of values from the
+      reference file. Used for autocompletion when setting tags.
+    - rebet--make-ref-line: (renamed to 'rebet--ref-line-format') this
+      creates the reference file's line format.
+    - rebet-tags-to-props: updates the org-properties based on ID3 tags
+      of file
+    - rebet-tags-to-props-and-back: this calls rebet-tags-to-props and
+      then proceeds to update the file again with newly defined
+      properties.
+
+    All other functionality will be redesigned. Already most of the
+    'Reference file' functionality (1) is finished.
+
+** New code
+
+*** Reference file
+
+     The reference file should be built and managed like this:
+
+     1. a function will check for paths not already in the file and update those
+     2. when updating a tag, the according entry in the file should be
+	deleted and the new one should be added afterwards, like such: after
+	setting the tag, get the values and build the entry.
+
+	#+begin_src emacs-lisp
+	(defun rebet--ref-get-path (ln)
+	  (replace-regexp-in-string "path:" ""
+				    (seq-find (lambda (x) (string-match-p "path:" x))
+					      (split-string ln "|"))))
+
+	(defun rebet--ref-line-format (path var-list)
+	       "Formats the string to put in ref file."
+	       (concat "|" (mapconcat
+			    (lambda (x) (concat (car x) ":" (cdr x)))
+			    var-list "|")
+		       "|path:" path))
+
+	(defun rebet--ref-remove-nonexistent ()
+	  "Removes entries with non-existent paths from the reference file."
+	  (let ((ref-file (expand-file-name rebet--ref-file)))
+	    (unless (file-exists-p ref-file)
+	      (user-error "Error: the reference file was not found (%s)" ref-file))
+	    (with-temp-file ref-file
+	      (insert-file-contents ref-file)
+	      (mapc (lambda (ln)
+		      (let ((path (rebet--ref-get-path ln)))
+			(unless (file-exists-p path)
+			  (flush-lines path (point-min) (point-max)))))
+		    (split-string (buffer-string) "\n")))))
+
+	(defun rebet--ref-remove-lines (match)
+	  "Remove lines containing MATCH from ref-file."
+	  (let ((ref-file (expand-file-name rebet--ref-file)))
+	    (unless (file-exists-p ref-file)
+	      (user-error "Error: the reference file was not found (%s)" ref-file))
+	    (with-temp-file ref-file
+	      (insert-file-contents ref-file)
+	      (flush-lines match (point-min) (point-max)))))
+
+	(defun rebet--mk-ref (&optional path)
+	  "Writes lines to `rebet--ref-file'. If PATH is not set, it will
+	  act on every mp3 file in `rebet-default-dir' recursively. If
+	  PATH is a directory, it will act in all .mp3 files in there,
+	  non-recursively. If PATH corresponds to a single file, it will
+	  act only on this file. With a prefix argument it replaces the
+	  file with the new content.
+
+	For the exact line formatting, see `rebet--ref-line-format'"
+	  (interactive)
+	  (let ((ref-file (expand-file-name rebet--ref-file))
+		(path (if (not path)
+			  (directory-files-recursively (expand-file-name rebet-default-dir) "mp3")
+			(if (file-directory-p path)
+			    (directory-files (expand-file-name path) t "mp3")
+			  (if (file-exists-p path)
+			      (list (expand-file-name path)))))))
+	    (if current-prefix-arg (delete-file ref-file))
+	    (if path
+		(with-temp-file ref-file
+		  (if (file-exists-p ref-file) (insert-file-contents ref-file))
+		  (mapc (lambda (file)
+			  (message "%s" file)
+			  (flush-lines file (point-min) (point-max))
+			  (insert
+			   (concat (rebet--ref-line-format file (rebet--get-data-from-id3 file)) "\n")))
+			path)))))
+	#+end_src
+    
+       
+*** Setting tags using eyeD3
+
+     This should be the basis of the new approach. It will essentially be
+     the opposite of 'rebet--get-data-from-id3' in the sense that it's input
+     will be of the same format as the output of this function, meaning an
+     associative array of the form ((<tag> . <value>)). By this it will
+     produce the eyeD3 command.
+
+     #+begin_src emacs-lisp
+     (defun rebet--set-tags (path val-list)
+       "Set the id3 tags of the file in PATH, using values from VAL-LIST.
+	 VAL-LIST should be of the form ((<tag> . <value>)).
+     Uses the eyeD3 program."
+       (let ((optlist (mapcar
+		       (lambda (attr)
+			 (cons (get attr 'eye-opt) (cdr (assoc (get attr 'tagname) val-list))))
+		       (seq-remove (lambda (x)
+				     (not (car (assoc (get x 'tagname) val-list))))
+				   rebet--attributes)))
+	     (path (expand-file-name path)))
+	 (shell-command (concat "eyeD3 " (shell-quote-argument path) " "
+				(mapconcat
+				 (lambda (x)
+				   (concat (car x) (shell-quote-argument (cdr x))))
+				 optlist " ") " >/dev/null"))))
+     #+end_src
+
+     Now, some other stuff: I need a function for renaming.
+
+     I will define a function creating the template used for naming, which
+     will be used by the function actually handling the renaming.
+
+     #+begin_src emacs-lisp
+     (defun rebet--make-name-string (val-list)
+       "Formats the string for file names using values in VAL-LIST.
+
+     Naming is of the form:
+     - <artist> - <title>, if <composer> is nil, or if <composer> is the same as <artist>
+     - <composer> (<artist>) - <title> otherwise.
+
+     If <title> or both <artist> and <composer> are nil, the name is also nil."
+       (let* ((artist (cdr (assoc "artist" val-list)))
+	      (composer (cdr (assoc "composer" val-list)))
+	      (title (cdr (assoc "title" val-list)))
+	      (creators (if artist
+			    (if (or (not composer) (string= composer artist))
+				artist
+			      (concat composer " (" artist ")")))))
+	 (if (and title creators)
+	     (concat creators " - " title))))
+
+     (defun rebet--rename (path val-list)
+       "Renames a file in PATH using values from VAL-LIST.
+
+     Renaming occurs only if the current file name is different from
+     the new file name and the file has an mp3 extension. If the file is finally renamed, the entry associated with it in ref-file gets also updated.
+
+     See `rebet--make-name-string' for the formatting of the file name."
+       (let* ((path (expand-file-name path))
+	      (oldname (file-name-base path))
+	      (dir (file-name-directory path))
+	      (ext (file-name-extension path))
+	      (newname (rebet--make-name-string val-list))
+	      (newpath (concat dir newname "." ext)))
+
+	 (unless (or (not newname) (string= oldname newname))
+	   (rename-file path newpath)
+	   (rebet--ref-remove-lines path)
+	   (rebet--mkref newpath))))
+     #+end_src
+
+*** Dired functions
+
+    These functions will be called from dired to actually set the ID3 tags.
+    Three different cases:
+
+    1. Change all tags of one or multiple files. This is the basic
+       functonality, just mark some files in dired and set the tags.
+       Default values will be provided if they are already set, and
+       completion will also work.
+    2. Set a tag on all files: Mark some files, choose a tag and set the
+       same value in all the files.
+    3. Change a tag globally: Choose a tag and change its value in all the
+       files in the directories. Mostly useful to correct spelling errors
+       etc.
+
+       #+begin_src emacs-lisp
+       (defun rebet-dired-tags ()
+	 "Prompts to set tags of marked files of dired buffer, also
+	 renaming the files if necessary. With prefix argument omits the
+	 renaming part. 
+       Throws errors if called from non-dired buffer or if the marked files
+	 contain non-mp3 files."
+	 (interactive)
+	 (unless (eq major-mode 'dired-mode)
+	   (user-error "Error: Not in dired buffer."))
+	 (rebet--make-ref-lists)
+	 (let ((files (dired-get-marked-files)))
+	   (mapc (lambda (file) (unless (string= (file-name-extension file) "mp3")
+				  (user-error "Error: Selection contains non-mp3 files.")))
+		 files)
+	   (mapc (lambda (file)
+		   (let* ((def-values (rebet--get-data-from-id3 file))
+			  (fname (file-name-base file))
+			  (new-values (mapcar
+				       (lambda (attr)
+					 (let* ((tag (get attr 'tagname))
+						(defval (cdr (assoc tag def-values))))
+					   (cons tag
+						 (completing-read (concat fname " | Set " tag ": ")
+								  (get attr 'autocomp-lst)
+								  nil nil defval))))
+				       rebet--attributes)))
+		     (message "%s" new-values)
+		     (rebet--set-tags file new-values)
+		     (unless current-prefix-arg
+		       (rebet--rename file new-values))))
+		 files)
+	   (revert-buffer)))
+       #+end_src
+
+** Epilogue
+
+   Just ending the code...
+
+   #+begin_src emacs-lisp
+   (provide 'rebet)
+   ;;; rebet.el ends here
+   #+end_src
